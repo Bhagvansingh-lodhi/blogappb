@@ -8,71 +8,96 @@ const cloudinary = require("../config/cloudinary");
 
 const router = express.Router();
 
-// Multer config – store file in memory
+/* ================= MULTER ================= */
 const storage = multer.memoryStorage();
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+});
 
-// Helper: upload buffer to Cloudinary using a Promise + upload_stream
+/* ================= CLOUDINARY UPLOAD ================= */
 const uploadToCloudinary = (buffer) => {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      { folder: "blog-images" },
+      {
+        folder: "blog-images",
+        resource_type: "image",
+      },
       (error, result) => {
-        if (error) {
-          return reject(error);
-        }
-        resolve(result);
+        if (error) reject(error);
+        else resolve(result);
       }
     );
 
-    // Send buffer into the stream
     streamifier.createReadStream(buffer).pipe(stream);
   });
 };
 
-// CREATE POST (admin only)
+/* ================= CREATE POST ================= */
 router.post("/", protect, upload.single("image"), async (req, res) => {
   try {
     const { title, description } = req.body;
 
-    if (!req.file) {
-      return res.status(400).json({ message: "Image is required" });
+    if (!title || !description || !req.file) {
+      return res.status(400).json({ message: "All fields required" });
     }
 
-    // Upload to Cloudinary
     const result = await uploadToCloudinary(req.file.buffer);
+
+    // 🔥 Save optimized Cloudinary URL (NO runtime processing)
+    const optimizedImage = result.secure_url.replace(
+      "/upload/",
+      "/upload/w_800,h_500,c_fill,q_auto,f_auto/"
+    );
 
     const post = await Post.create({
       title,
       description,
-      imageUrl: result.secure_url,
+      imageUrl: optimizedImage,
     });
 
-    return res.status(201).json(post);
+    res.status(201).json(post);
   } catch (err) {
-    console.error("Cloudinary upload error:", err);
-    return res.status(500).json({ message: "Image upload failed" });
+    console.error(err);
+    res.status(500).json({ message: "Post creation failed" });
   }
 });
 
-
-// GET ALL POSTS (public)
+/* ================= GET POSTS (FAST) ================= */
 router.get("/", async (req, res) => {
   try {
-    const posts = await Post.find().sort({ createdAt: -1 });
+    const posts = await Post.find()
+      .select("title imageUrl createdAt") // 🔥 light payload
+      .sort({ createdAt: -1 })
+      .lean(); // 🔥 faster response
+
     res.json(posts);
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 });
 
-// DELETE POST (admin only)
+/* ================= DELETE POST ================= */
 router.delete("/:id", protect, async (req, res) => {
   try {
-    await Post.findByIdAndDelete(req.params.id);
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    // Optional: Cloudinary image cleanup
+    const publicId = post.imageUrl
+      .split("/")
+      .pop()
+      .split(".")[0];
+
+    await cloudinary.uploader.destroy(`blog-images/${publicId}`);
+    await post.deleteOne();
+
     res.json({ message: "Post deleted" });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Delete failed" });
   }
 });
 
