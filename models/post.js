@@ -7,6 +7,7 @@ const postSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      index: true   // 🔥 search fast
     },
     description: {
       type: String,
@@ -19,5 +20,8 @@ const postSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// 🔥 Most important index for blog listing
+postSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model("Post", postSchema);

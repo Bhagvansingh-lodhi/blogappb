@@ -4,76 +4,74 @@ const streamifier = require("streamifier");
 const Post = require("../models/post");
 const protect = require("../middleware/authMiddleware");
 const cloudinary = require("../config/cloudinary");
+const cache = require("../cache");
 
 const router = express.Router();
 
-/* ================= MULTER CONFIG ================= */
-const storage = multer.memoryStorage();
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-});
+/* MULTER */
+const upload = multer({ storage: multer.memoryStorage() });
 
-/* ================= CLOUDINARY UPLOAD ================= */
-const uploadToCloudinary = (buffer) => {
-  return new Promise((resolve, reject) => {
+/* CLOUDINARY */
+const uploadToCloudinary = buffer =>
+  new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       { folder: "blog-images" },
-      (error, result) => {
-        if (error) reject(error);
-        else resolve(result);
-      }
+      (err, result) => (err ? reject(err) : resolve(result))
     );
     streamifier.createReadStream(buffer).pipe(stream);
   });
-};
 
-/* ================= CREATE POST ================= */
+/* CREATE POST */
 router.post("/", protect, upload.single("image"), async (req, res) => {
   try {
     const { title, description } = req.body;
-
-    if (!title || !description || !req.file) {
+    if (!title || !description || !req.file)
       return res.status(400).json({ message: "All fields required" });
-    }
 
     const result = await uploadToCloudinary(req.file.buffer);
 
-    // Optimized Cloudinary image
-    const optimizedImage = result.secure_url.replace(
+    const optimized = result.secure_url.replace(
       "/upload/",
-      "/upload/w_800,h_500,c_fill,q_auto,f_auto/"
+      "/upload/w_900,h_520,c_fill,q_auto,f_auto/"
     );
 
-    const post = await Post.create({
-      title,
-      description,
-      imageUrl: optimizedImage,
-    });
+    const post = await Post.create({ title, description, imageUrl: optimized });
+
+    cache.flushAll(); // 🔥 auto refresh
 
     res.status(201).json(post);
-  } catch (err) {
-    console.error(err);
+  } catch {
     res.status(500).json({ message: "Post creation failed" });
   }
 });
 
-/* ================= GET POSTS (FAST & SAFE) ================= */
+/* GET POSTS ULTRA FAST */
 router.get("/", async (req, res) => {
-  try {
-    const posts = await Post.find()
-      .select("title description imageUrl createdAt")
-      .sort({ createdAt: -1 })
-      .lean();
+  const page = parseInt(req.query.page) || 1;
+  const limit = 6;
+  const key = `posts_${page}`;
 
-    res.json(posts);
-  } catch (err) {
-    res.status(500).json({ message: "Server error" });
-  }
+  const cached = cache.get(key);
+  if (cached) return res.json(cached);
+
+  const posts = await Post.find()
+    .select("title imageUrl createdAt")
+    .sort({ createdAt: -1 })
+    .skip((page - 1) * limit)
+    .limit(limit)
+    .lean();
+
+  const total = await Post.countDocuments();
+
+  const response = { posts, totalPages: Math.ceil(total / limit) };
+
+  cache.set(key, response);
+  res.json(response);
 });
 
-/* ================= GET SINGLE POST ================= */
+/* GET SINGLE POST */
 router.get("/:id", async (req, res) => {
+<<<<<<< HEAD
   try {
     const post = await Post.findById(req.params.id).lean();
     if (!post) return res.status(404).json({ message: "Post not found" });
@@ -121,25 +119,52 @@ router.get("/:id", async (req, res) => {
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
+=======
+  const key = `post_${req.params.id}`;
+  const cached = cache.get(key);
+  if (cached) return res.json(cached);
+
+  const post = await Post.findById(req.params.id).lean();
+  if (!post) return res.status(404).json({ message: "Post not found" });
+
+  const blocks = post.description.split("\n").map(b => b.trim()).filter(Boolean);
+  let lead = "", sections = [], current = null;
+
+  blocks.forEach(line => {
+    if (line === "---") {
+      if (current) sections.push(current);
+      current = null;
+    } else if (!lead) lead = line;
+    else if (!current) current = { heading: line, paragraphs: [] };
+    else current.paragraphs.push(line);
+  });
+  if (current) sections.push(current);
+
+  const response = {
+    _id: post._id,
+    title: post.title,
+    imageUrl: post.imageUrl,
+    createdAt: post.createdAt,
+    lead,
+    sections
+  };
+
+  cache.set(key, response);
+  res.json(response);
+>>>>>>> a0bcccd (perf: optimize frontend & lighthouse fixes)
 });
 
-/* ================= DELETE POST (SAFE) ================= */
+/* DELETE POST */
 router.delete("/:id", protect, async (req, res) => {
-  try {
-    const post = await Post.findById(req.params.id);
-    if (!post) return res.status(404).json({ message: "Post not found" });
+  const post = await Post.findById(req.params.id);
+  if (!post) return res.status(404).json({ message: "Not found" });
 
-    // Safe Cloudinary delete
-    if (post.imageUrl) {
-      const publicId = post.imageUrl.split("/").pop().split(".")[0];
-      await cloudinary.uploader.destroy(`blog-images/${publicId}`);
-    }
+  const publicId = post.imageUrl.split("/").pop().split(".")[0];
+  await cloudinary.uploader.destroy(`blog-images/${publicId}`);
+  await post.deleteOne();
 
-    await post.deleteOne();
-    res.json({ message: "Post deleted successfully" });
-  } catch (err) {
-    res.status(500).json({ message: "Delete failed" });
-  }
+  cache.flushAll();
+  res.json({ message: "Deleted" });
 });
 
 module.exports = router;
