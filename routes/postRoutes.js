@@ -70,9 +70,13 @@ router.get("/", async (req, res) => {
 });
 
 /* GET SINGLE POST */
+/* GET SINGLE POST */
 router.get("/:id", async (req, res) => {
-<<<<<<< HEAD
   try {
+    const key = `post_${req.params.id}`;
+    const cached = cache.get(key);
+    if (cached) return res.json(cached);
+
     const post = await Post.findById(req.params.id).lean();
     if (!post) return res.status(404).json({ message: "Post not found" });
 
@@ -107,52 +111,22 @@ router.get("/:id", async (req, res) => {
 
     if (current) sections.push(current);
 
-    res.json({
+    const response = {
       _id: post._id,
       title: post.title,
       imageUrl: post.imageUrl,
       createdAt: post.createdAt,
       lead,
       sections
-    });
+    };
 
+    cache.set(key, response);
+    res.json(response);
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
-=======
-  const key = `post_${req.params.id}`;
-  const cached = cache.get(key);
-  if (cached) return res.json(cached);
-
-  const post = await Post.findById(req.params.id).lean();
-  if (!post) return res.status(404).json({ message: "Post not found" });
-
-  const blocks = post.description.split("\n").map(b => b.trim()).filter(Boolean);
-  let lead = "", sections = [], current = null;
-
-  blocks.forEach(line => {
-    if (line === "---") {
-      if (current) sections.push(current);
-      current = null;
-    } else if (!lead) lead = line;
-    else if (!current) current = { heading: line, paragraphs: [] };
-    else current.paragraphs.push(line);
-  });
-  if (current) sections.push(current);
-
-  const response = {
-    _id: post._id,
-    title: post.title,
-    imageUrl: post.imageUrl,
-    createdAt: post.createdAt,
-    lead,
-    sections
-  };
-
-  cache.set(key, response);
-  res.json(response);
->>>>>>> a0bcccd (perf: optimize frontend & lighthouse fixes)
 });
+
 
 /* DELETE POST */
 router.delete("/:id", protect, async (req, res) => {
